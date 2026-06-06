@@ -129,7 +129,12 @@ def build_index_for_session(session: dict, uploaded_pdfs, youtube_links, web_lin
         st.warning("No sources available to build the index.")
         return None
 
-    store = indexing.build_faiss_index(session["id"], docs)
+    try:
+        store = indexing.build_faiss_index(session["id"], docs)
+    except indexing.IndexingError as exc:
+        st.error(str(exc))
+        return None
+
     if store:
         sessions.update_session_sources(
             session["id"],
