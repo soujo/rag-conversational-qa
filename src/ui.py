@@ -10,6 +10,23 @@ def render_header():
     st.caption(APP_DESCRIPTION)
 
 
+def _unique_citation_docs(docs):
+    unique_docs = []
+    seen = set()
+    for doc in docs:
+        meta = doc.metadata or {}
+        key = (
+            meta.get("type", "Source"),
+            meta.get("source") or meta.get("file_path") or "Unknown",
+            meta.get("page"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_docs.append(doc)
+    return unique_docs
+
+
 def sidebar_sessions(sessions, current_session_id):
     st.sidebar.subheader("Sessions")
     session_options = {s["name"]: s["id"] for s in sessions}
@@ -82,8 +99,9 @@ def render_chat_history(messages: list[BaseMessage], citations_map: dict, show_c
             with st.chat_message("assistant"):
                 st.write(msg.content)
                 if citations_map.get(idx):
+                    visible_docs = _unique_citation_docs(citations_map[idx])
                     st.markdown("**Sources**")
-                    for doc in citations_map[idx]:
+                    for doc in visible_docs:
                         meta = doc.metadata or {}
                         label = meta.get("type", "Source")
                         source = meta.get("source") or meta.get("file_path") or "Unknown"

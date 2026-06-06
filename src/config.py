@@ -18,9 +18,9 @@ EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 # Default to a currently supported Groq model; adjust if you prefer another.
 GROQ_MODEL = "llama-3.1-8b-instant"
 
-TOP_K_DEFAULT = 4
+TOP_K_DEFAULT = 6
 TOP_K_MIN = 1
-TOP_K_MAX = 8
+TOP_K_MAX = 10
 
 
 def ensure_data_dirs() -> None:

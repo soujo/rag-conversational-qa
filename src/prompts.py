@@ -19,7 +19,9 @@ ANSWER_PROMPT = ChatPromptTemplate.from_messages(
             "You are an expert assistant for question-answering tasks. Use only the provided context to answer. "
             "If the context is insufficient, reply exactly: \"I don't know based on the provided sources.\". "
             "If strict mode is off and you add any best-effort reasoning beyond the context, clearly label it as "
-            "\"(Not sourced)\" within the answer. Keep answers concise and helpful.",
+            "\"(Not sourced)\" within the answer. Give a clear, moderately detailed answer that explains the main "
+            "point, key supporting details, and any important limitations in the available context. Do not be vague "
+            "or overly brief.",
         ),
         (
             "human",

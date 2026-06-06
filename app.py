@@ -91,21 +91,25 @@ def build_index_for_session(session: dict, uploaded_pdfs, youtube_links, web_lin
     docs = []
     pdf_paths = []
 
-    # Existing PDFs on disk
-    existing_pdf_docs, existing_pdf_paths = loaders.load_existing_pdfs(
-        session["id"], existing_sources.get("pdfs", [])
-    )
-    docs.extend(existing_pdf_docs)
-    pdf_paths.extend(existing_pdf_paths)
+    try:
+        # Existing PDFs on disk
+        existing_pdf_docs, existing_pdf_paths = loaders.load_existing_pdfs(
+            session["id"], existing_sources.get("pdfs", [])
+        )
+        docs.extend(existing_pdf_docs)
+        pdf_paths.extend(existing_pdf_paths)
 
-    # Newly uploaded PDFs
-    if uploaded_pdfs:
-        new_docs, new_paths = loaders.load_pdfs(session["id"], uploaded_pdfs)
-        docs.extend(new_docs)
-        pdf_paths.extend(new_paths)
-        updated_pdf_files = existing_sources.get("pdfs", []) + [p.name for p in new_paths]
-    else:
-        updated_pdf_files = existing_sources.get("pdfs", [])
+        # Newly uploaded PDFs
+        if uploaded_pdfs:
+            new_docs, new_paths = loaders.load_pdfs(session["id"], uploaded_pdfs)
+            docs.extend(new_docs)
+            pdf_paths.extend(new_paths)
+            updated_pdf_files = existing_sources.get("pdfs", []) + [p.name for p in new_paths]
+        else:
+            updated_pdf_files = existing_sources.get("pdfs", [])
+    except loaders.LoaderError as exc:
+        st.error(str(exc))
+        return None
 
     youtube_merged = list(dict.fromkeys(existing_sources.get("youtube", []) + youtube_links))
     web_merged = list(dict.fromkeys(existing_sources.get("web", []) + web_links))
@@ -119,7 +123,7 @@ def build_index_for_session(session: dict, uploaded_pdfs, youtube_links, web_lin
     try:
         yt_docs = loaders.load_youtube_transcripts(youtube_merged)
         web_docs = loaders.load_webpages(web_merged)
-    except ValueError as exc:
+    except loaders.LoaderError as exc:
         st.error(str(exc))
         return None
     docs.extend(yt_docs)

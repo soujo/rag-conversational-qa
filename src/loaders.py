@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 from typing import List, Sequence, Tuple
+from urllib.parse import parse_qs, urlparse
 
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
 from langchain_core.documents import Document
@@ -9,25 +10,94 @@ from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, No
 from .config import UPLOADS_DIR
 from .utils import ensure_dir, safe_filename
 
+DEFAULT_YOUTUBE_LANGUAGES = ["en"]
+
+
+class LoaderError(RuntimeError):
+    pass
+
 
 def parse_links(raw: str) -> List[str]:
     if not raw:
         return []
     parts = re.split(r"[\n,]+", raw)
-    return [p.strip() for p in parts if p.strip()]
+    links: List[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        link = part.strip()
+        if not link or link in seen:
+            continue
+        seen.add(link)
+        links.append(link)
+    return links
+
+
+def _validate_http_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise LoaderError(f"Invalid URL: {url}")
+    return url.strip()
 
 
 def extract_youtube_id(url: str) -> str:
-    patterns = [
-        r"youtu\.be/([A-Za-z0-9_-]{6,})",
-        r"youtube\.com/watch\?v=([A-Za-z0-9_-]{6,})",
-        r"youtube\.com/shorts/([A-Za-z0-9_-]{6,})",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    raise ValueError(f"Could not parse YouTube video id from URL: {url}")
+    parsed = urlparse(_validate_http_url(url))
+    host = parsed.netloc.lower().replace("www.", "")
+
+    if host == "youtu.be":
+        video_id = parsed.path.strip("/").split("/", maxsplit=1)[0]
+        if video_id:
+            return video_id
+
+    if host in {"youtube.com", "m.youtube.com"}:
+        if parsed.path == "/watch":
+            video_id = parse_qs(parsed.query).get("v", [None])[0]
+            if video_id:
+                return video_id
+        if parsed.path.startswith("/shorts/") or parsed.path.startswith("/live/"):
+            video_id = parsed.path.strip("/").split("/", maxsplit=1)[1]
+            if video_id:
+                return video_id
+
+    raise LoaderError(f"Could not parse YouTube video id from URL: {url}")
+
+
+def _load_pdf_documents(path: Path, source_name: str) -> List[Document]:
+    try:
+        pdf_docs = PyPDFLoader(str(path)).load()
+    except Exception as exc:  # noqa: BLE001
+        raise LoaderError(f"Failed to read PDF '{source_name}'.") from exc
+
+    for doc in pdf_docs:
+        doc.metadata.update({"type": "PDF", "source": source_name, "file_path": str(path)})
+    return pdf_docs
+
+
+def _transcript_items_to_text(items) -> str:
+    snippets = []
+    for item in items:
+        if isinstance(item, dict):
+            text = item.get("text", "")
+        else:
+            text = getattr(item, "text", "")
+        text = text.strip()
+        if text:
+            snippets.append(text)
+    return " ".join(snippets)
+
+
+def _fetch_transcript_items(video_id: str):
+    api = YouTubeTranscriptApi()
+
+    if hasattr(api, "fetch"):
+        fetched = api.fetch(video_id, languages=DEFAULT_YOUTUBE_LANGUAGES)
+        if hasattr(fetched, "to_raw_data"):
+            return fetched.to_raw_data()
+        return list(fetched)
+
+    if hasattr(YouTubeTranscriptApi, "get_transcript"):
+        return YouTubeTranscriptApi.get_transcript(video_id, languages=DEFAULT_YOUTUBE_LANGUAGES)
+
+    raise LoaderError("Installed youtube-transcript-api version is not supported.")
 
 
 def load_pdfs(session_id: str, uploaded_files) -> Tuple[List[Document], List[Path]]:
@@ -38,14 +108,12 @@ def load_pdfs(session_id: str, uploaded_files) -> Tuple[List[Document], List[Pat
     for file in uploaded_files:
         filename = safe_filename(file.name)
         dest = dest_dir / filename
-        with dest.open("wb") as f:
-            f.write(file.getbuffer())
-        loader = PyPDFLoader(str(dest))
-        pdf_docs = loader.load()
-        for doc in pdf_docs:
-            doc.metadata.update(
-                {"type": "PDF", "source": filename, "file_path": str(dest)}
-            )
+        try:
+            with dest.open("wb") as f:
+                f.write(file.getbuffer())
+            pdf_docs = _load_pdf_documents(dest, filename)
+        except Exception as exc:  # noqa: BLE001
+            raise LoaderError(f"Failed to ingest uploaded PDF '{file.name}'.") from exc
         docs.extend(pdf_docs)
         saved_paths.append(dest)
     return docs, saved_paths
@@ -58,12 +126,7 @@ def load_existing_pdfs(session_id: str, filenames: Sequence[str]) -> Tuple[List[
         path = UPLOADS_DIR / session_id / name
         if not path.exists():
             continue
-        loader = PyPDFLoader(str(path))
-        pdf_docs = loader.load()
-        for doc in pdf_docs:
-            doc.metadata.update(
-                {"type": "PDF", "source": name, "file_path": str(path)}
-            )
+        pdf_docs = _load_pdf_documents(path, name)
         docs.extend(pdf_docs)
         paths.append(path)
     return docs, paths
@@ -76,12 +139,14 @@ def load_youtube_transcripts(urls: Sequence[str]) -> List[Document]:
             continue
         video_id = extract_youtube_id(url)
         try:
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+            transcript_items = _fetch_transcript_items(video_id)
         except (TranscriptsDisabled, NoTranscriptFound):
-            raise ValueError(f"Transcript not available for {url}")
+            raise LoaderError(f"Transcript not available for {url}")
         except Exception as exc:  # noqa: BLE001
-            raise ValueError(f"Failed to fetch transcript for {url}: {exc}") from exc
-        text = " ".join([item.get("text", "") for item in transcript_list])
+            raise LoaderError(f"Failed to fetch transcript for {url}: {exc}") from exc
+        text = _transcript_items_to_text(transcript_items)
+        if not text:
+            raise LoaderError(f"Transcript was empty for {url}")
         doc = Document(
             page_content=text,
             metadata={"type": "YouTube", "source": url, "video_id": video_id},
@@ -91,11 +156,16 @@ def load_youtube_transcripts(urls: Sequence[str]) -> List[Document]:
 
 
 def load_webpages(urls: Sequence[str]) -> List[Document]:
-    clean_urls = [u for u in urls if u]
+    clean_urls = [_validate_http_url(u) for u in urls if u]
     if not clean_urls:
         return []
-    loader = WebBaseLoader(clean_urls)
-    docs = loader.load()
-    for doc in docs:
-        doc.metadata.update({"type": "Web", "source": doc.metadata.get("source")})
-    return docs
+    documents: List[Document] = []
+    for url in clean_urls:
+        try:
+            docs = WebBaseLoader(url).load()
+        except Exception as exc:  # noqa: BLE001
+            raise LoaderError(f"Failed to load webpage {url}: {exc}") from exc
+        for doc in docs:
+            doc.metadata.update({"type": "Web", "source": doc.metadata.get("source") or url})
+        documents.extend(docs)
+    return documents
